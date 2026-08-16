@@ -19,6 +19,10 @@ Source folders/files are **never modified or deleted** — outputs are written a
 
 A "volume" (or a bundle of volumes released together, e.g. a `v01-05/` folder) is one folder, and everything under it belongs inside that single archive. Comic readers sort by full path within the archive, so nested subfolders read in order fine without needing their own separate files. If you want a folder that bundles several volumes to become one `.cbz` per volume instead, point the script at that bundling folder's *parent* so each volume folder is what gets scanned at the top level — the script won't split a bundle for you.
 
+### Pointing -Path directly at a single volume folder
+
+If `-Path` itself has no subfolders (it holds pages directly rather than being a container of volume/pack folders — e.g. you run the script from inside a folder of volume folders and point it straight at one specific volume, `.\v13\`), that folder is converted on its own into one `.cbz` written next to its parent. This only kicks in when `-Path` has zero subfolders, so it never changes how a container folder is handled — pointing `-Path` at a folder that holds several volume/pack folders still converts each of *those* into its own `.cbz`, same as always.
+
 ### Reading direction (ComicInfo.xml)
 
 Every generated `.cbz` gets a `ComicInfo.xml` written at the root of the archive (a sibling of the top-level folder entry, not nested inside it), e.g.:

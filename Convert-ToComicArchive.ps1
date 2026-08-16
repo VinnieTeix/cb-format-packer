@@ -3,7 +3,13 @@
     Converts volume folders/.rar/.zip files into .cbz/.cbr comic archives.
 
 .DESCRIPTION
-    Scans the immediate children of -Path (one level only) and converts each:
+    If -Path itself contains no subfolders (i.e. it's a volume folder itself, holding
+    pages directly - like "v13" sitting next to a "v01-05" pack folder), it is converted
+    on its own into a single sibling .cbz, written next to -Path's parent. This only
+    triggers when -Path has zero subfolders, so it never changes how a container folder
+    (one holding multiple volume/pack folders) is handled below.
+
+    Otherwise, scans the immediate children of -Path (one level only) and converts each:
       - Folder  -> sibling .cbz, containing the whole folder subtree (including any
                    nested subfolders, at any depth) zipped with the folder name kept
                    as the root entry. Nested folders are NOT split into their own
@@ -154,7 +160,33 @@ if (-not (Test-Path -LiteralPath $Path)) {
 }
 $Path = (Resolve-Path -LiteralPath $Path).Path
 
-$items = Get-ChildItem -LiteralPath $Path
+$topChildren = Get-ChildItem -LiteralPath $Path
+$topHasSubDirs = $topChildren | Where-Object { $_.PSIsContainer }
+
+if ($topChildren -and -not $topHasSubDirs) {
+    # -Path itself has no subfolders, i.e. it holds pages directly rather than being a
+    # container of volume/pack folders - convert -Path itself as a single volume.
+    $parentDir = Split-Path -Parent $Path
+    $leafName = Split-Path -Leaf $Path
+    $dest = Join-Path $parentDir "$leafName.cbz"
+    if ((Test-Path -LiteralPath $dest) -and -not $Force) {
+        Write-Host "SKIP  (exists) $dest"
+    }
+    elseif ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$leafName'")) {
+        try {
+            New-ComicZip -SourceDir $Path -DestZip $dest -Manga $MangaValue
+            Write-Host "CBZ   $leafName -> $(Split-Path -Leaf $dest)"
+        }
+        catch {
+            Write-Host "FAIL  $($leafName): $($_.Exception.Message)" -ForegroundColor Red
+            $tmp = "$dest.tmp"
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+        }
+    }
+    return
+}
+
+$items = $topChildren
 if (-not $items) {
     Write-Warning "No items found directly inside '$Path'."
     return
