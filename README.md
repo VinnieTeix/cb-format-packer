@@ -23,6 +23,19 @@ A "volume" (or a bundle of volumes released together, e.g. a `v01-05/` folder) i
 
 If `-Path` itself has no subfolders (it holds pages directly rather than being a container of volume/pack folders — e.g. you run the script from inside a folder of volume folders and point it straight at one specific volume, `.\v13\`), that folder is converted on its own into one `.cbz` written next to its parent. This only kicks in when `-Path` has zero subfolders, so it never changes how a container folder is handled — pointing `-Path` at a folder that holds several volume/pack folders still converts each of *those* into its own `.cbz`, same as always.
 
+### -Recurse: auto-detecting real volume folders at any depth
+
+The default one-level scan can't tell a folder that mixes loose pages with subfolders (a real single volume, like a Doraemon `Vol 01` holding both its own cover pages and `Story 001`, `Story 002`, ... subfolders) apart from a folder that's *purely* a container bundling several volumes together (a `v01-05` pack with no pages of its own, just five volume subfolders) — both just get zipped whole as one unit. `-Recurse` tells them apart and acts on it: a folder counts as a real volume as soon as it has at least one page file directly inside it, or has no subfolders left to descend into; a folder holding *only* more folders and no pages of its own is not a real volume, so the script descends into it and repeats the check on each subfolder instead.
+
+This means one `-Recurse` run over a mixed tree — a `v01-05` pack sitting next to a standalone `v13` — correctly turns the pack into 5 separate volume `.cbz` files while also converting `v13` into its own single `.cbz`, all in the same pass, regardless of how deep each one happens to be nested. Every result is written flat into a single `<Path's own name>_output` folder created next to `-Path`, rather than scattered across whatever depth each volume folder was found at:
+
+```powershell
+.\Convert-ToComicArchive.ps1 -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
+# -> .\13DL.me_Yotsubato vol 01-15_output\<volume>.cbz for all 15 volumes
+```
+
+(`.cbz`/`.cbr` files already sitting inside a folder are ignored when deciding whether that folder "has its own pages" — otherwise re-running `-Recurse` after a partial run, or after pointing `-Path` directly at a pack folder without `-Recurse` once, would leave its own prior output looking like real page content and stop it from being descended into correctly next time.)
+
 ### Reading direction (ComicInfo.xml)
 
 Every generated `.cbz` gets a `ComicInfo.xml` written at the root of the archive (a sibling of the top-level folder entry, not nested inside it), e.g.:
@@ -46,6 +59,7 @@ Converts every folder/.rar/.zip directly inside `.\Scan` into a matching `.cbz`/
 
 ### Options
 
+- `-Recurse` — auto-detect real volume folders at any depth instead of only looking one level deep; see above
 - `-LeftToRight` — tag the batch as left-to-right instead of the default right-to-left
 - `-Force` — overwrite an output file that already exists (default: skip it)
 - `-WhatIf` — preview what would be created/overwritten without writing anything

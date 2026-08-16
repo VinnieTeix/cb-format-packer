@@ -3,11 +3,11 @@
     Converts volume folders/.rar/.zip files into .cbz/.cbr comic archives.
 
 .DESCRIPTION
+    Default (no -Recurse): one level only.
+
     If -Path itself contains no subfolders (i.e. it's a volume folder itself, holding
     pages directly - like "v13" sitting next to a "v01-05" pack folder), it is converted
-    on its own into a single sibling .cbz, written next to -Path's parent. This only
-    triggers when -Path has zero subfolders, so it never changes how a container folder
-    (one holding multiple volume/pack folders) is handled below.
+    on its own into a single sibling .cbz, written next to -Path's parent.
 
     Otherwise, scans the immediate children of -Path (one level only) and converts each:
       - Folder  -> sibling .cbz, containing the whole folder subtree (including any
@@ -22,6 +22,21 @@
       - .zip file -> sibling .cbz (container copied, then a ComicInfo.xml reading-direction
                      entry is added/replaced at the archive root)
 
+    With -Recurse: walks the whole tree under -Path looking for "final" volume folders,
+    at whatever depth each one happens to sit, and writes one .cbz per volume into a
+    single "<Path's own name>_output" folder created next to -Path. A folder counts as
+    a final volume as soon as it contains at least one file directly inside it, or has
+    no subfolders left to descend into - so a folder with only loose pages (no
+    subfolders) is final immediately, a folder mixing loose pages with subfolders
+    (e.g. a Doraemon "Vol 01" holding both its own cover pages and "Story 001",
+    "Story 002", ... subfolders) is final as a whole (everything nested included in one
+    archive, matching how it's zipped without -Recurse), and a folder holding *only*
+    more folders and no files of its own (e.g. a "v01-05" pack with zero loose pages,
+    just five volume subfolders) is not final - the script descends into it and repeats
+    the check on each subfolder instead. This is what lets one -Recurse run correctly
+    turn a "v01-05" pack into 5 separate volume .cbz files while also converting a
+    standalone "v13" into its own single .cbz, in the same pass.
+
     Every generated .cbz gets a ComicInfo.xml file written at the root of the archive
     (a sibling of the top-level folder entry, not nested inside it) so readers like
     KOReader pick up the reading direction automatically. Right-to-left (manga order)
@@ -34,6 +49,11 @@
 
 .PARAMETER Path
     Directory whose immediate children should be converted (e.g. ".\Digital" or ".\Scan").
+
+.PARAMETER Recurse
+    Walk the whole tree under -Path for final volume folders (see above) instead of
+    only looking one level deep, writing every resulting .cbz into a single
+    "<Path's own name>_output" folder created next to -Path.
 
 .PARAMETER LeftToRight
     Tag the generated ComicInfo.xml as left-to-right reading order instead of the
@@ -53,11 +73,16 @@
 
 .EXAMPLE
     .\Convert-ToComicArchive.ps1 -Path .\SomeWesternComic -LeftToRight
+
+.EXAMPLE
+    .\Convert-ToComicArchive.ps1 -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
+
+    [switch]$Recurse,
 
     [switch]$LeftToRight,
 
@@ -101,6 +126,33 @@ function Write-ComicInfoEntry {
     finally {
         $writer.Dispose()
     }
+}
+
+function Resolve-VolumeFolders {
+    # Descends through folders that contain nothing but more folders (no pages of
+    # their own), returning the actual volume folder(s) found at whatever depth
+    # each branch bottoms out at. A folder with any non-archive file directly inside
+    # it, or with no subfolders at all, is treated as final and not descended into.
+    param([string]$Dir)
+
+    $children = Get-ChildItem -LiteralPath $Dir
+    # .cbz/.cbr are ignored here on purpose: a pack folder re-scanned after a partial
+    # earlier run (or after someone points -Path directly at it, which - without
+    # -Recurse - writes each volume's .cbz right back inside the pack folder itself)
+    # would otherwise look like it "has its own files" and stop being descended into,
+    # even though those files are our own prior output, not source pages.
+    $hasFiles = $children | Where-Object { -not $_.PSIsContainer -and $_.Extension -notin @('.cbz', '.cbr') }
+    $subDirs = $children | Where-Object { $_.PSIsContainer }
+
+    if ($hasFiles -or -not $subDirs) {
+        return , (Get-Item -LiteralPath $Dir)
+    }
+
+    $result = @()
+    foreach ($sub in $subDirs) {
+        $result += Resolve-VolumeFolders -Dir $sub.FullName
+    }
+    return $result
 }
 
 function New-ComicZip {
@@ -155,10 +207,54 @@ function Set-CbzReadingDirection {
     }
 }
 
+function Convert-FolderToCbz {
+    # Shared skip/force/-WhatIf/try-catch wrapper around New-ComicZip, used by every
+    # folder-conversion call site (direct-leaf -Path, one-level container children,
+    # and -Recurse's resolved volume folders) so they report identically.
+    param(
+        [string]$SourceDir,
+        [string]$DestDir,
+        [string]$Name
+    )
+
+    $dest = Join-Path $DestDir "$Name.cbz"
+    if ((Test-Path -LiteralPath $dest) -and -not $Force) {
+        Write-Host "SKIP  (exists) $dest"
+        return
+    }
+    if ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$Name'")) {
+        try {
+            New-ComicZip -SourceDir $SourceDir -DestZip $dest -Manga $MangaValue
+            Write-Host "CBZ   $Name -> $(Split-Path -Leaf $dest)"
+        }
+        catch {
+            Write-Host "FAIL  $($Name): $($_.Exception.Message)" -ForegroundColor Red
+            $tmp = "$dest.tmp"
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+        }
+    }
+}
+
 if (-not (Test-Path -LiteralPath $Path)) {
     throw "Path not found: $Path"
 }
 $Path = (Resolve-Path -LiteralPath $Path).Path
+
+# Without -Recurse, each converted folder is written next to wherever it naturally
+# sits (see the two call sites below). With -Recurse, every result - no matter how
+# deep the volume folder it came from - is collected flat into one output folder
+# next to -Path, so a mixed tree of packs and standalone volumes doesn't scatter
+# output across every nesting level it was found at.
+$OutDir = $Path
+if ($Recurse) {
+    $OutDir = Join-Path (Split-Path -Parent $Path) "$(Split-Path -Leaf $Path)_output"
+    if ((-not (Test-Path -LiteralPath $OutDir)) -and $PSCmdlet.ShouldProcess($OutDir, 'Create output folder')) {
+        # New-Item has no -LiteralPath in Windows PowerShell 5.1; use the .NET API
+        # directly so an output folder name containing [ ] is never misread as a
+        # wildcard pattern.
+        [System.IO.Directory]::CreateDirectory($OutDir) | Out-Null
+    }
+}
 
 $topChildren = Get-ChildItem -LiteralPath $Path
 $topHasSubDirs = $topChildren | Where-Object { $_.PSIsContainer }
@@ -166,23 +262,8 @@ $topHasSubDirs = $topChildren | Where-Object { $_.PSIsContainer }
 if ($topChildren -and -not $topHasSubDirs) {
     # -Path itself has no subfolders, i.e. it holds pages directly rather than being a
     # container of volume/pack folders - convert -Path itself as a single volume.
-    $parentDir = Split-Path -Parent $Path
-    $leafName = Split-Path -Leaf $Path
-    $dest = Join-Path $parentDir "$leafName.cbz"
-    if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-        Write-Host "SKIP  (exists) $dest"
-    }
-    elseif ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$leafName'")) {
-        try {
-            New-ComicZip -SourceDir $Path -DestZip $dest -Manga $MangaValue
-            Write-Host "CBZ   $leafName -> $(Split-Path -Leaf $dest)"
-        }
-        catch {
-            Write-Host "FAIL  $($leafName): $($_.Exception.Message)" -ForegroundColor Red
-            $tmp = "$dest.tmp"
-            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
-        }
-    }
+    $leafDestDir = if ($Recurse) { $OutDir } else { Split-Path -Parent $Path }
+    Convert-FolderToCbz -SourceDir $Path -DestDir $leafDestDir -Name (Split-Path -Leaf $Path)
     return
 }
 
@@ -195,25 +276,17 @@ if (-not $items) {
 foreach ($item in $items) {
 
     if ($item.PSIsContainer) {
-        $dest = Join-Path $Path "$($item.Name).cbz"
-        if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-            Write-Host "SKIP  (exists) $dest"
-            continue
+        if ($Recurse) {
+            foreach ($volDir in (Resolve-VolumeFolders -Dir $item.FullName)) {
+                Convert-FolderToCbz -SourceDir $volDir.FullName -DestDir $OutDir -Name $volDir.Name
+            }
         }
-        if ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$($item.Name)'")) {
-            try {
-                New-ComicZip -SourceDir $item.FullName -DestZip $dest -Manga $MangaValue
-                Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)"
-            }
-            catch {
-                Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
-                $tmp = "$dest.tmp"
-                if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
-            }
+        else {
+            Convert-FolderToCbz -SourceDir $item.FullName -DestDir $Path -Name $item.Name
         }
     }
     elseif ($item.Extension -ieq '.rar') {
-        $dest = Join-Path $Path ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbr')
+        $dest = Join-Path $OutDir ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbr')
         if ((Test-Path -LiteralPath $dest) -and -not $Force) {
             Write-Host "SKIP  (exists) $dest"
             continue
@@ -229,7 +302,7 @@ foreach ($item in $items) {
         }
     }
     elseif ($item.Extension -ieq '.zip') {
-        $dest = Join-Path $Path ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbz')
+        $dest = Join-Path $OutDir ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbz')
         if ((Test-Path -LiteralPath $dest) -and -not $Force) {
             Write-Host "SKIP  (exists) $dest"
             continue
