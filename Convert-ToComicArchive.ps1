@@ -3,18 +3,14 @@
     Converts volume folders/.rar/.zip files into .cbz/.cbr comic archives.
 
 .DESCRIPTION
-    Scans the immediate children of -Path and converts each:
-      - Folder  -> one or more sibling .cbz files. A folder is treated as an actual
-                   volume (and zipped whole, including any nested "Story ##" style
-                   subfolders, as a single archive) as soon as it contains at least one
-                   file directly inside it, or has no subfolders left to descend into.
-                   If instead it contains *only* subfolders and no files of its own
-                   (a pure grouping folder, e.g. a "v01-05" folder bundling five volume
-                   folders with no loose pages at its own level), the script descends
-                   into it and repeats the check on each subfolder instead - so a mix of
-                   flat volumes and grouped volumes under the same parent both resolve
-                   to one .cbz per real volume. All resulting .cbz files are written
-                   flat, next to $Path, using the resolved volume folder's own name.
+    Scans the immediate children of -Path (one level only) and converts each:
+      - Folder  -> sibling .cbz, containing the whole folder subtree (including any
+                   nested subfolders, at any depth) zipped with the folder name kept
+                   as the root entry. Nested folders are NOT split into their own
+                   separate archives - only this first level of subfolders is treated
+                   as one unit each, so a folder that packs several volumes together
+                   (e.g. a "v01-05" folder holding five volume subfolders) becomes one
+                   .cbz containing all of them, not one .cbz per volume.
       - .rar file -> sibling .cbr (container rename only, RAR data is untouched -
                      reading-direction metadata is NOT embedded for this case, see below)
       - .zip file -> sibling .cbz (container copied, then a ComicInfo.xml reading-direction
@@ -101,28 +97,6 @@ function Write-ComicInfoEntry {
     }
 }
 
-function Resolve-VolumeFolders {
-    # Descends through folders that contain nothing but more folders (no pages of
-    # their own), returning the actual volume folder(s) found at whatever depth
-    # each branch bottoms out at. A folder with any file directly inside it, or
-    # with no subfolders at all, is treated as a volume and not descended into.
-    param([string]$Dir)
-
-    $children = Get-ChildItem -LiteralPath $Dir
-    $hasFiles = $children | Where-Object { -not $_.PSIsContainer }
-    $subDirs = $children | Where-Object { $_.PSIsContainer }
-
-    if ($hasFiles -or -not $subDirs) {
-        return , (Get-Item -LiteralPath $Dir)
-    }
-
-    $result = @()
-    foreach ($sub in $subDirs) {
-        $result += Resolve-VolumeFolders -Dir $sub.FullName
-    }
-    return $result
-}
-
 function New-ComicZip {
     param(
         [string]$SourceDir,
@@ -189,23 +163,20 @@ if (-not $items) {
 foreach ($item in $items) {
 
     if ($item.PSIsContainer) {
-        $volumeDirs = Resolve-VolumeFolders -Dir $item.FullName
-        foreach ($volDir in $volumeDirs) {
-            $dest = Join-Path $Path "$($volDir.Name).cbz"
-            if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-                Write-Host "SKIP  (exists) $dest"
-                continue
+        $dest = Join-Path $Path "$($item.Name).cbz"
+        if ((Test-Path -LiteralPath $dest) -and -not $Force) {
+            Write-Host "SKIP  (exists) $dest"
+            continue
+        }
+        if ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$($item.Name)'")) {
+            try {
+                New-ComicZip -SourceDir $item.FullName -DestZip $dest -Manga $MangaValue
+                Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)"
             }
-            if ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$($volDir.Name)'")) {
-                try {
-                    New-ComicZip -SourceDir $volDir.FullName -DestZip $dest -Manga $MangaValue
-                    Write-Host "CBZ   $($volDir.Name) -> $(Split-Path -Leaf $dest)"
-                }
-                catch {
-                    Write-Host "FAIL  $($volDir.Name): $($_.Exception.Message)" -ForegroundColor Red
-                    $tmp = "$dest.tmp"
-                    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
-                }
+            catch {
+                Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
+                $tmp = "$dest.tmp"
+                if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
             }
         }
     }

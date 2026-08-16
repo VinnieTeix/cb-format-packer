@@ -4,22 +4,20 @@ A small PowerShell script that packs comic folders/archives into the `.cbz`/`.cb
 
 ## What it does
 
-Given a directory, it looks at that directory's **immediate children** and converts each one:
+Given a directory, it looks at that directory's **immediate children only** (one level deep — it never recurses further to look for more things to convert) and converts each one:
 
 | Input | Output | How |
 |---|---|---|
-| Folder | one or more `<name>.cbz` | See "Resolving volumes" below. |
+| Folder | `<name>.cbz` | Whole folder zipped as one archive, with the folder name kept as the root entry inside the zip. Anything nested further down (e.g. per-story subfolders, or a folder that packs several volumes together like `v01-05/`) is included as-is — it does **not** get split into separate archives. |
 | `.rar` file | `<name>.cbr` | Copied and renamed — a CBR *is* a RAR file, so no recompression happens. Reading-direction metadata is **not** embedded for this case (no built-in .NET support for writing RAR archives). |
 | `.zip` file | `<name>.cbz` | Copied and renamed — a CBZ *is* a ZIP file — then a `ComicInfo.xml` reading-direction entry is added/replaced at the archive root. |
 | Anything else | ignored | left untouched |
 
 Source folders/files are **never modified or deleted** — outputs are written as new sibling files.
 
-### Resolving volumes
+### Why only one level deep?
 
-A folder is treated as one real "volume" (and zipped whole into a single `.cbz`, folder name kept as the root entry inside the zip) as soon as it contains at least one file directly inside it, or has no subfolders left to descend into. Everything nested further down (e.g. per-story subfolders) is included as-is inside that one archive — it does **not** get split further.
-
-If a folder instead contains *only* subfolders and no files of its own — a pure grouping folder, e.g. a release that bundles `v01-05/` with five volume folders inside and no loose pages at the `v01-05` level — the script descends into it and repeats the check on each subfolder instead. This means a release that mixes flat volumes and grouped volumes under the same parent still resolves to exactly one `.cbz` per real volume. All resulting `.cbz` files are written flat, next to the folder you pointed the script at.
+A "volume" (or a bundle of volumes released together, e.g. a `v01-05/` folder) is one folder, and everything under it belongs inside that single archive. Comic readers sort by full path within the archive, so nested subfolders read in order fine without needing their own separate files. If you want a folder that bundles several volumes to become one `.cbz` per volume instead, point the script at that bundling folder's *parent* so each volume folder is what gets scanned at the top level — the script won't split a bundle for you.
 
 ### Reading direction (ComicInfo.xml)
 
