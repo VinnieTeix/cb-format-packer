@@ -66,16 +66,21 @@
     Show what would be done without writing anything.
 
 .EXAMPLE
-    .\Convert-ToComicArchive.ps1 -Path .\Scan
+    cca -Path .\Scan
 
 .EXAMPLE
-    .\Convert-ToComicArchive.ps1 -Path .\Digital -Force
+    cca -Path .\Digital -Force
 
 .EXAMPLE
-    .\Convert-ToComicArchive.ps1 -Path .\SomeWesternComic -LeftToRight
+    cca -Path .\SomeWesternComic -LeftToRight
 
 .EXAMPLE
-    .\Convert-ToComicArchive.ps1 -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
+    cca -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
+
+.NOTES
+    Run once after cloning: .\install.ps1 - adds a "cca" command to your user PATH
+    that always calls this file directly, so edits here take effect immediately.
+    Without installing, run it as .\cca.ps1 (same parameters).
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(

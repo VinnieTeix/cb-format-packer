@@ -2,6 +2,18 @@
 
 A small PowerShell script that packs comic folders/archives into the `.cbz`/`.cbr` formats used by comic readers (Kobo, ComicRack, KOReader, etc.), with right-to-left (manga) reading order set by default.
 
+## Installation
+
+Run once, from inside a clone of this repo:
+
+```powershell
+.\install.ps1
+```
+
+This adds a `cca` command to your User `PATH` (default location: `%LOCALAPPDATA%\cca`). It's a small `cca.cmd` shim that always calls this repo's `cca.ps1` by its full path, so pulling updates to the repo takes effect immediately — no need to rerun `install.ps1` unless you move the repo. (A bare `.ps1` file can't be run by typing its name alone — Windows `PATHEXT` doesn't include `.PS1` by design — hence the `.cmd` shim, which resolves from PowerShell, `cmd.exe`, or Win+R alike.)
+
+Open a **new** terminal after installing (already-open ones won't see the `PATH` change). From then on, run it as `cca` from anywhere, e.g. `cca -Path .\Scan`. Without installing, you can still always run it directly as `.\cca.ps1` with the same parameters.
+
 ## What it does
 
 Given a directory, it looks at that directory's **immediate children only** (one level deep — it never recurses further to look for more things to convert) and converts each one:
@@ -30,7 +42,7 @@ The default one-level scan can't tell a folder that mixes loose pages with subfo
 This means one `-Recurse` run over a mixed tree — a `v01-05` pack sitting next to a standalone `v13` — correctly turns the pack into 5 separate volume `.cbz` files while also converting `v13` into its own single `.cbz`, all in the same pass, regardless of how deep each one happens to be nested. Every result is written flat into a single `<Path's own name>_output` folder created next to `-Path`, rather than scattered across whatever depth each volume folder was found at:
 
 ```powershell
-.\Convert-ToComicArchive.ps1 -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
+cca -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
 # -> .\13DL.me_Yotsubato vol 01-15_output\<volume>.cbz for all 15 volumes
 ```
 
@@ -52,7 +64,7 @@ Readers that support it (KOReader, Kavita, Komga, ComicRack, ...) pick up the di
 ## Usage
 
 ```powershell
-.\Convert-ToComicArchive.ps1 -Path .\Scan
+cca -Path .\Scan
 ```
 
 Converts every folder/.rar/.zip directly inside `.\Scan` into a matching `.cbz`/`.cbr` next to it, tagged right-to-left by default.
@@ -66,13 +78,13 @@ Converts every folder/.rar/.zip directly inside `.\Scan` into a matching `.cbz`/
 
 ```powershell
 # Preview only
-.\Convert-ToComicArchive.ps1 -Path .\Digital -WhatIf
+cca -Path .\Digital -WhatIf
 
 # A Western comic that should read left-to-right
-.\Convert-ToComicArchive.ps1 -Path .\SomeWesternComic -LeftToRight
+cca -Path .\SomeWesternComic -LeftToRight
 
 # Re-convert everything, overwriting existing .cbz/.cbr files
-.\Convert-ToComicArchive.ps1 -Path .\Digital -Force
+cca -Path .\Digital -Force
 ```
 
 ## Requirements
