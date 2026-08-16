@@ -3,20 +3,39 @@
     Converts volume folders/.rar/.zip files into .cbz/.cbr comic archives.
 
 .DESCRIPTION
-    Scans the immediate children of -Path (one level only) and converts each:
-      - Folder  -> sibling .cbz, containing the whole folder subtree (including any
-                   nested "Story ##" subfolders) zipped with the folder name kept as
-                   the root entry, exactly like the hand-made Digital\Vol 00.cbz etc.
-                   Nested folders are NOT split into their own separate archives -
-                   only this first level of subfolders is treated as one unit each.
-      - .rar file -> sibling .cbr (container rename only, RAR data is untouched)
-      - .zip file -> sibling .cbz (container rename only, ZIP data is untouched)
+    Scans the immediate children of -Path and converts each:
+      - Folder  -> one or more sibling .cbz files. A folder is treated as an actual
+                   volume (and zipped whole, including any nested "Story ##" style
+                   subfolders, as a single archive) as soon as it contains at least one
+                   file directly inside it, or has no subfolders left to descend into.
+                   If instead it contains *only* subfolders and no files of its own
+                   (a pure grouping folder, e.g. a "v01-05" folder bundling five volume
+                   folders with no loose pages at its own level), the script descends
+                   into it and repeats the check on each subfolder instead - so a mix of
+                   flat volumes and grouped volumes under the same parent both resolve
+                   to one .cbz per real volume. All resulting .cbz files are written
+                   flat, next to $Path, using the resolved volume folder's own name.
+      - .rar file -> sibling .cbr (container rename only, RAR data is untouched -
+                     reading-direction metadata is NOT embedded for this case, see below)
+      - .zip file -> sibling .cbz (container copied, then a ComicInfo.xml reading-direction
+                     entry is added/replaced at the archive root)
+
+    Every generated .cbz gets a ComicInfo.xml file written at the root of the archive
+    (a sibling of the top-level folder entry, not nested inside it) so readers like
+    KOReader pick up the reading direction automatically. Right-to-left (manga order)
+    is the default; pass -LeftToRight to tag it as normal left-to-right reading order
+    instead. This cannot be done for a plain .rar->.cbr container rename, since there's
+    no built-in .NET support for writing RAR archives.
 
     Existing output files are skipped unless -Force is given. Source
     folders/files are never modified or deleted.
 
 .PARAMETER Path
     Directory whose immediate children should be converted (e.g. ".\Digital" or ".\Scan").
+
+.PARAMETER LeftToRight
+    Tag the generated ComicInfo.xml as left-to-right reading order instead of the
+    default right-to-left (manga) order.
 
 .PARAMETER Force
     Overwrite an existing .cbz/.cbr output if one is already present.
@@ -29,11 +48,16 @@
 
 .EXAMPLE
     .\Convert-ToComicArchive.ps1 -Path .\Digital -Force
+
+.EXAMPLE
+    .\Convert-ToComicArchive.ps1 -Path .\SomeWesternComic -LeftToRight
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
+
+    [switch]$LeftToRight,
 
     [switch]$Force
 )
@@ -41,19 +65,85 @@ param(
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+$ErrorActionPreference = 'Stop'
+
+$MangaValue = if ($LeftToRight) { 'No' } else { 'YesAndRightToLeft' }
+
+function Get-ComicInfoXml {
+    param([string]$Manga)
+
+    return @"
+<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Manga>$Manga</Manga>
+</ComicInfo>
+"@
+}
+
+function Write-ComicInfoEntry {
+    param(
+        [System.IO.Compression.ZipArchive]$Zip,
+        [string]$Manga
+    )
+
+    # Remove any existing root-level ComicInfo.xml (case-insensitive, root only -
+    # a nested "SomeFolder/ComicInfo.xml" from the source content is left alone).
+    $existing = $Zip.Entries | Where-Object { $_.FullName -ieq 'ComicInfo.xml' }
+    foreach ($entry in $existing) { $entry.Delete() }
+
+    $newEntry = $Zip.CreateEntry('ComicInfo.xml', [System.IO.Compression.CompressionLevel]::Optimal)
+    $writer = New-Object System.IO.StreamWriter($newEntry.Open(), [System.Text.Encoding]::UTF8)
+    try {
+        $writer.Write((Get-ComicInfoXml -Manga $Manga))
+    }
+    finally {
+        $writer.Dispose()
+    }
+}
+
+function Resolve-VolumeFolders {
+    # Descends through folders that contain nothing but more folders (no pages of
+    # their own), returning the actual volume folder(s) found at whatever depth
+    # each branch bottoms out at. A folder with any file directly inside it, or
+    # with no subfolders at all, is treated as a volume and not descended into.
+    param([string]$Dir)
+
+    $children = Get-ChildItem -LiteralPath $Dir
+    $hasFiles = $children | Where-Object { -not $_.PSIsContainer }
+    $subDirs = $children | Where-Object { $_.PSIsContainer }
+
+    if ($hasFiles -or -not $subDirs) {
+        return , (Get-Item -LiteralPath $Dir)
+    }
+
+    $result = @()
+    foreach ($sub in $subDirs) {
+        $result += Resolve-VolumeFolders -Dir $sub.FullName
+    }
+    return $result
+}
+
 function New-ComicZip {
     param(
         [string]$SourceDir,
-        [string]$DestZip
+        [string]$DestZip,
+        [string]$Manga
     )
 
     $rootName = Split-Path -Leaf $SourceDir
     $tempZip = "$DestZip.tmp"
-    if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+    if (Test-Path -LiteralPath $tempZip) { Remove-Item -LiteralPath $tempZip -Force }
+
+    # -LiteralPath everywhere below: folder names here can contain [ ], which
+    # -Path/positional path parameters treat as wildcard characters, silently
+    # matching zero files instead of the literal folder.
+    $files = Get-ChildItem -LiteralPath $SourceDir -Recurse -File
+    if (-not $files) {
+        throw "No files found under '$SourceDir' - refusing to write an empty archive."
+    }
 
     $zip = [System.IO.Compression.ZipFile]::Open($tempZip, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
-        $files = Get-ChildItem -Path $SourceDir -Recurse -File
         foreach ($file in $files) {
             $relative = $file.FullName.Substring($SourceDir.Length + 1) -replace '\\', '/'
             $entryName = "$rootName/$relative"
@@ -61,12 +151,28 @@ function New-ComicZip {
                 $zip, $file.FullName, $entryName,
                 [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
         }
+        Write-ComicInfoEntry -Zip $zip -Manga $Manga
     }
     finally {
         $zip.Dispose()
     }
 
-    Move-Item -Path $tempZip -Destination $DestZip -Force
+    Move-Item -LiteralPath $tempZip -Destination $DestZip -Force
+}
+
+function Set-CbzReadingDirection {
+    param(
+        [string]$ZipPath,
+        [string]$Manga
+    )
+
+    $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Update)
+    try {
+        Write-ComicInfoEntry -Zip $zip -Manga $Manga
+    }
+    finally {
+        $zip.Dispose()
+    }
 }
 
 if (-not (Test-Path -LiteralPath $Path)) {
@@ -83,14 +189,24 @@ if (-not $items) {
 foreach ($item in $items) {
 
     if ($item.PSIsContainer) {
-        $dest = Join-Path $Path "$($item.Name).cbz"
-        if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-            Write-Host "SKIP  (exists) $dest"
-            continue
-        }
-        if ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$($item.Name)'")) {
-            Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)"
-            New-ComicZip -SourceDir $item.FullName -DestZip $dest
+        $volumeDirs = Resolve-VolumeFolders -Dir $item.FullName
+        foreach ($volDir in $volumeDirs) {
+            $dest = Join-Path $Path "$($volDir.Name).cbz"
+            if ((Test-Path -LiteralPath $dest) -and -not $Force) {
+                Write-Host "SKIP  (exists) $dest"
+                continue
+            }
+            if ($PSCmdlet.ShouldProcess($dest, "Create CBZ from folder '$($volDir.Name)'")) {
+                try {
+                    New-ComicZip -SourceDir $volDir.FullName -DestZip $dest -Manga $MangaValue
+                    Write-Host "CBZ   $($volDir.Name) -> $(Split-Path -Leaf $dest)"
+                }
+                catch {
+                    Write-Host "FAIL  $($volDir.Name): $($_.Exception.Message)" -ForegroundColor Red
+                    $tmp = "$dest.tmp"
+                    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+                }
+            }
         }
     }
     elseif ($item.Extension -ieq '.rar') {
@@ -100,8 +216,13 @@ foreach ($item in $items) {
             continue
         }
         if ($PSCmdlet.ShouldProcess($dest, "Copy RAR to CBR '$($item.Name)'")) {
-            Write-Host "CBR   $($item.Name) -> $(Split-Path -Leaf $dest)"
-            Copy-Item -LiteralPath $item.FullName -Destination $dest -Force
+            try {
+                Copy-Item -LiteralPath $item.FullName -Destination $dest -Force
+                Write-Host "CBR   $($item.Name) -> $(Split-Path -Leaf $dest)  (reading direction NOT embedded - RAR)"
+            }
+            catch {
+                Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
+            }
         }
     }
     elseif ($item.Extension -ieq '.zip') {
@@ -111,8 +232,14 @@ foreach ($item in $items) {
             continue
         }
         if ($PSCmdlet.ShouldProcess($dest, "Copy ZIP to CBZ '$($item.Name)'")) {
-            Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)"
-            Copy-Item -LiteralPath $item.FullName -Destination $dest -Force
+            try {
+                Copy-Item -LiteralPath $item.FullName -Destination $dest -Force
+                Set-CbzReadingDirection -ZipPath $dest -Manga $MangaValue
+                Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)"
+            }
+            catch {
+                Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
+            }
         }
     }
     else {
