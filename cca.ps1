@@ -291,6 +291,24 @@ function Convert-FolderToCbz {
     }
 }
 
+# A -Path ending in a trailing backslash (e.g. '.\Some Folder\') gets mangled once it
+# crosses a native process boundary - which calling through the cca.cmd shim always
+# does - because Windows argv parsing treats a backslash immediately before the
+# closing quote as an escaped literal quote rather than the string terminator, so the
+# quote doesn't close the argument. When -Path is the *last* token on the line, the
+# only damage is a stray trailing '"' - stripped below so it self-heals. But when
+# something follows it (another flag), that text gets absorbed into this same $Path
+# value instead of being parsed as its own argument - which could silently swallow
+# -WhatIf without the caller noticing. Detect that shape and fail loudly with the fix
+# (reorder so -Path is last) rather than either a cryptic .NET exception or silently
+# dropping a flag the caller thought they'd passed.
+if ($Path -match '^(?<path>.*)"\s+-(?<flag>\w+)\s*$') {
+    throw "-Path '$($Matches.path)' has a trailing backslash and was followed by -$($Matches.flag) on the command line. " +
+        "A native process boundary (the cca.cmd shim) mangles that combination and would silently drop -$($Matches.flag) - " +
+        "move -Path to the end of the command instead, e.g.: cca -$($Matches.flag) -Path '$($Matches.path)\'"
+}
+$Path = $Path.TrimEnd('"', '\', '/')
+
 if (-not (Test-Path -LiteralPath $Path)) {
     throw "Path not found: $Path"
 }
