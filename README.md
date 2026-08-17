@@ -1,6 +1,8 @@
 # cb-format-packer
 
-A small PowerShell script that packs comic folders/archives into the `.cbz`/`.cbr` formats used by comic readers (Kobo, ComicRack, KOReader, etc.), with right-to-left (manga) reading order set by default.
+A small PowerShell script that packs comic folders/archives into `.cbz`, with right-to-left (manga) reading order set by default.
+
+**Output is always `.cbz`, never `.cbr` — even when the source is a `.rar`/`.cbr`.** This is deliberate: Kobo (and KOReader on it) doesn't support zooming in on panels for `.cbr` files, only `.cbz`. A `.rar`/`.cbr` source is extracted and re-zipped into a proper `.cbz` rather than just renamed.
 
 ## Installation
 
@@ -21,7 +23,7 @@ Given a directory, it looks at that directory's **immediate children only** (one
 | Input | Output | How |
 |---|---|---|
 | Folder | `<name>.cbz` | Whole folder zipped as one archive, with the folder name kept as the root entry inside the zip. Anything nested further down (e.g. per-story subfolders, or a folder that packs several volumes together like `v01-05/`) is included as-is — it does **not** get split into separate archives. |
-| `.rar` file | `<name>.cbr` | Copied and renamed — a CBR *is* a RAR file, so no recompression happens. Reading-direction metadata is **not** embedded for this case (no built-in .NET support for writing RAR archives). |
+| `.rar`/`.cbr` file | `<name>.cbz` — **never `.cbr`** | Extracted with 7-Zip or WinRAR (whichever is found — see Requirements) into a temp folder, then re-zipped from there exactly like a folder source would be, `ComicInfo.xml` included. See "Why always `.cbz`, even from RAR" below. |
 | `.zip` file | `<name>.cbz` | Copied and renamed — a CBZ *is* a ZIP file — then a `ComicInfo.xml` reading-direction entry is added/replaced at the archive root. |
 | Anything else | ignored | left untouched |
 
@@ -31,9 +33,15 @@ Source folders/files are **never modified or deleted** — outputs are written a
 
 A "volume" (or a bundle of volumes released together, e.g. a `v01-05/` folder) is one folder, and everything under it belongs inside that single archive. Comic readers sort by full path within the archive, so nested subfolders read in order fine without needing their own separate files. If you want a folder that bundles several volumes to become one `.cbz` per volume instead, point the script at that bundling folder's *parent* so each volume folder is what gets scanned at the top level — the script won't split a bundle for you.
 
+### Why always .cbz, even from RAR
+
+A `.rar`/`.cbr` source is never just renamed to `.cbr` — it's extracted and re-zipped into `.cbz`, because Kobo (and KOReader running on it) can't zoom in on individual panels in a `.cbr` file, only `.cbz`. That's the entire reason this repo exists in its current form, so it's worth keeping in mind if you ever add a source type: the "just rename the container" shortcut that works for `.zip → .cbz` (same underlying format, no recompression needed) does **not** apply to RAR, both because RAR and ZIP are different formats and because a `.cbr` output would defeat the point.
+
+Since RAR has no built-in .NET support (unlike ZIP), this requires **7-Zip or WinRAR to already be installed** — checked on `PATH` and in their default `Program Files` locations, 7-Zip preferred if both are present. If neither is found, that `.rar`/`.cbr` is reported as `FAIL` and skipped; everything else in the same run still proceeds normally.
+
 ### Pointing -Path directly at a single volume folder
 
-If `-Path` itself has no subfolders (it holds pages directly rather than being a container of volume/pack folders — e.g. you run the script from inside a folder of volume folders and point it straight at one specific volume, `.\v13\`), that folder is converted on its own into one `.cbz` written next to its parent. This only kicks in when `-Path` has zero subfolders, so it never changes how a container folder is handled — pointing `-Path` at a folder that holds several volume/pack folders still converts each of *those* into its own `.cbz`, same as always.
+If `-Path` itself has no subfolders *and* isn't just a folder of `.rar`/`.cbr`/`.zip`/`.cbz` files either (it holds pages directly rather than being a container of volume/pack folders or archive files — e.g. you run the script from inside a folder of volume folders and point it straight at one specific volume, `.\v13\`), that folder is converted on its own into one `.cbz` written next to its parent. Pointing `-Path` straight at a folder containing nothing but a handful of `.rar`/`.cbr` files (no subfolders) still converts each of them individually rather than wrapping them all into one `.cbz` together. This only kicks in when `-Path` has zero subfolders and zero archive files directly inside it, so it never changes how a container folder is handled — pointing `-Path` at a folder that holds several volume/pack folders still converts each of *those* into its own `.cbz`, same as always.
 
 ### -Recurse: auto-detecting real volume folders at any depth
 
@@ -67,7 +75,7 @@ Readers that support it (KOReader, Kavita, Komga, ComicRack, ...) pick up the di
 cca -Path .\Scan
 ```
 
-Converts every folder/.rar/.zip directly inside `.\Scan` into a matching `.cbz`/`.cbr` next to it, tagged right-to-left by default.
+Converts every folder/.rar/.cbr/.zip directly inside `.\Scan` into a matching `.cbz` next to it (never `.cbr`), tagged right-to-left by default.
 
 ### Options
 
@@ -83,13 +91,14 @@ cca -Path .\Digital -WhatIf
 # A Western comic that should read left-to-right
 cca -Path .\SomeWesternComic -LeftToRight
 
-# Re-convert everything, overwriting existing .cbz/.cbr files
+# Re-convert everything, overwriting existing .cbz files
 cca -Path .\Digital -Force
 ```
 
 ## Requirements
 
-Windows PowerShell 5.1+ (uses the built-in `System.IO.Compression` assemblies — no external tools like 7-Zip or WinRAR needed).
+- Windows PowerShell 5.1+ (uses the built-in `System.IO.Compression` assemblies for the `.cbz` side — no external tool needed for folder/`.zip` sources).
+- **7-Zip or WinRAR**, only if you have `.rar`/`.cbr` sources to convert — RAR has no built-in .NET support for reading it, so one of these has to do the actual extraction. Not needed at all if your sources are only folders or `.zip` files.
 
 ## Notes on folder names with `[`, `]`, or other wildcard characters
 

@@ -1,6 +1,8 @@
 <#
 .SYNOPSIS
-    Converts volume folders/.rar/.zip files into .cbz/.cbr comic archives.
+    Converts volume folders/.rar/.cbr/.zip into .cbz comic archives. Output is always
+    .cbz, even from a .rar/.cbr source - Kobo/KOReader doesn't support panel zoom on
+    .cbr, which is the reason this never produces one.
 
 .DESCRIPTION
     Default (no -Recurse): one level only.
@@ -17,8 +19,11 @@
                    as one unit each, so a folder that packs several volumes together
                    (e.g. a "v01-05" folder holding five volume subfolders) becomes one
                    .cbz containing all of them, not one .cbz per volume.
-      - .rar file -> sibling .cbr (container rename only, RAR data is untouched -
-                     reading-direction metadata is NOT embedded for this case, see below)
+      - .rar/.cbr file -> sibling .cbz. Extracted with 7-Zip or WinRAR (whichever is
+                     found - see Requirements) into a temp folder, then re-zipped from
+                     there with the same layout .cbz would otherwise have gotten,
+                     including the ComicInfo.xml reading-direction entry. Never
+                     produces a .cbr - see Requirements if neither tool is found.
       - .zip file -> sibling .cbz (container copied, then a ComicInfo.xml reading-direction
                      entry is added/replaced at the archive root)
 
@@ -41,8 +46,7 @@
     (a sibling of the top-level folder entry, not nested inside it) so readers like
     KOReader pick up the reading direction automatically. Right-to-left (manga order)
     is the default; pass -LeftToRight to tag it as normal left-to-right reading order
-    instead. This cannot be done for a plain .rar->.cbr container rename, since there's
-    no built-in .NET support for writing RAR archives.
+    instead.
 
     Existing output files are skipped unless -Force is given. Source
     folders/files are never modified or deleted.
@@ -81,6 +85,12 @@
     Run once after cloning: .\install.ps1 - adds a "cca" command to your user PATH
     that always calls this file directly, so edits here take effect immediately.
     Without installing, run it as .\cca.ps1 (same parameters).
+
+    Converting a .rar/.cbr source requires 7-Zip or WinRAR to already be installed
+    (checked on PATH and in their default Program Files locations) - unlike .zip,
+    RAR has no built-in .NET support for reading it, so this script can't do it alone.
+    A .rar/.cbr encountered with neither tool available is reported as FAIL and
+    skipped; everything else in the same run still proceeds.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -160,14 +170,55 @@ function Resolve-VolumeFolders {
     return $result
 }
 
+function Find-RarExtractor {
+    # Checks PATH and the default install locations for 7-Zip (preferred - scriptable,
+    # predictable flags) and WinRAR's UnRAR, since neither is reliably on PATH by
+    # default even when installed. Returns $null if neither is found.
+    $candidates = @(
+        (Get-Command '7z.exe' -ErrorAction SilentlyContinue).Source
+        (Get-Command '7za.exe' -ErrorAction SilentlyContinue).Source
+        "$env:ProgramFiles\7-Zip\7z.exe"
+        "${env:ProgramFiles(x86)}\7-Zip\7z.exe"
+        (Get-Command 'UnRAR.exe' -ErrorAction SilentlyContinue).Source
+        "$env:ProgramFiles\WinRAR\UnRAR.exe"
+        "${env:ProgramFiles(x86)}\WinRAR\UnRAR.exe"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
+    if ($candidates) { return $candidates[0] }
+    return $null
+}
+
+function Expand-RarArchive {
+    # Extracts $RarPath (full paths preserved) into $DestDir, which must already exist.
+    param(
+        [string]$RarPath,
+        [string]$DestDir,
+        [string]$ExtractorPath
+    )
+
+    if ($ExtractorPath -match '\\7za?\.exe$') {
+        & $ExtractorPath x $RarPath "-o$DestDir" -y -bso0 -bsp0 -bse0
+    }
+    else {
+        # UnRAR.exe: "x" keeps the archive's folder structure; needs a trailing
+        # backslash to be treated as a destination directory rather than a file mask.
+        & $ExtractorPath x -y $RarPath "$DestDir\"
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "'$ExtractorPath' exited with code $LASTEXITCODE while extracting '$RarPath'."
+    }
+}
+
 function New-ComicZip {
     param(
         [string]$SourceDir,
         [string]$DestZip,
-        [string]$Manga
+        [string]$Manga,
+        [string]$RootName = (Split-Path -Leaf $SourceDir)
     )
 
-    $rootName = Split-Path -Leaf $SourceDir
+    $rootName = $RootName
     $tempZip = "$DestZip.tmp"
     if (Test-Path -LiteralPath $tempZip) { Remove-Item -LiteralPath $tempZip -Force }
 
@@ -263,10 +314,12 @@ if ($Recurse) {
 
 $topChildren = Get-ChildItem -LiteralPath $Path
 $topHasSubDirs = $topChildren | Where-Object { $_.PSIsContainer }
+$topHasArchives = $topChildren | Where-Object { -not $_.PSIsContainer -and $_.Extension -in @('.rar', '.cbr', '.zip', '.cbz') }
 
-if ($topChildren -and -not $topHasSubDirs) {
-    # -Path itself has no subfolders, i.e. it holds pages directly rather than being a
-    # container of volume/pack folders - convert -Path itself as a single volume.
+if ($topChildren -and -not $topHasSubDirs -and -not $topHasArchives) {
+    # -Path itself has no subfolders and isn't just a folder of archive files either,
+    # i.e. it holds pages directly rather than being a container of volume/pack
+    # folders or a folder of .rar/.zip files - convert -Path itself as a single volume.
     $leafDestDir = if ($Recurse) { $OutDir } else { Split-Path -Parent $Path }
     Convert-FolderToCbz -SourceDir $Path -DestDir $leafDestDir -Name (Split-Path -Leaf $Path)
     return
@@ -277,6 +330,11 @@ if (-not $items) {
     Write-Warning "No items found directly inside '$Path'."
     return
 }
+
+# Only looked up if a .rar/.cbr is actually encountered below, since most runs won't
+# have one and this touches PATH/Program Files each time it's needed.
+$RarExtractor = $null
+$RarExtractorChecked = $false
 
 foreach ($item in $items) {
 
@@ -290,19 +348,37 @@ foreach ($item in $items) {
             Convert-FolderToCbz -SourceDir $item.FullName -DestDir $Path -Name $item.Name
         }
     }
-    elseif ($item.Extension -ieq '.rar') {
-        $dest = Join-Path $OutDir ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbr')
+    elseif ($item.Extension -ieq '.rar' -or $item.Extension -ieq '.cbr') {
+        # Always converted to .cbz, never .cbr - Kobo/KOReader doesn't support panel
+        # zoom on .cbr, which is the whole reason this path exists. RAR has no
+        # built-in .NET support, so this needs 7-Zip or WinRAR to extract it first.
+        $dest = Join-Path $OutDir ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbz')
         if ((Test-Path -LiteralPath $dest) -and -not $Force) {
             Write-Host "SKIP  (exists) $dest"
             continue
         }
-        if ($PSCmdlet.ShouldProcess($dest, "Copy RAR to CBR '$($item.Name)'")) {
+        if (-not $RarExtractorChecked) {
+            $RarExtractor = Find-RarExtractor
+            $RarExtractorChecked = $true
+        }
+        if ($PSCmdlet.ShouldProcess($dest, "Extract RAR/CBR to CBZ '$($item.Name)'")) {
+            if (-not $RarExtractor) {
+                Write-Host "FAIL  $($item.Name): no RAR extractor found (checked PATH and default install locations for 7-Zip and WinRAR) - install one to convert .rar/.cbr sources." -ForegroundColor Red
+                continue
+            }
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('cca_' + [System.Guid]::NewGuid().ToString('N'))
             try {
-                Copy-Item -LiteralPath $item.FullName -Destination $dest -Force
-                Write-Host "CBR   $($item.Name) -> $(Split-Path -Leaf $dest)  (reading direction NOT embedded - RAR)"
+                [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+                Expand-RarArchive -RarPath $item.FullName -DestDir $tempDir -ExtractorPath $RarExtractor
+                New-ComicZip -SourceDir $tempDir -DestZip $dest -Manga $MangaValue `
+                    -RootName ([System.IO.Path]::GetFileNameWithoutExtension($item.Name))
+                Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)  (extracted from RAR)"
             }
             catch {
                 Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
+            }
+            finally {
+                if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
             }
         }
     }
