@@ -40,13 +40,15 @@ cca -Path '.\13DL.me_Yotsubato vol 01-15'
 # -> .\13DL.me_Yotsubato vol 01-15_output\<volume>.cbz for all 15 volumes
 ```
 
-(`.cbz`/`.cbr` files already sitting inside a folder are ignored when deciding whether that folder "has its own pages" — otherwise re-running this after a partial run, or after converting a pack folder with `-NoRecurse` once, would leave its own prior output looking like real page content and stop it from being descended into correctly next time.)
+(`.cbz` files already sitting inside a folder are ignored when deciding whether that folder "has its own pages" — otherwise re-running this after a partial run, or after converting a pack folder with `-NoRecurse` once, would leave its own prior output looking like real page content and stop it from being descended into correctly next time. `.rar`/`.cbr`/`.zip` are *not* excluded this way, since this tool never produces those as output — see the next section.)
+
+**A folder holding one archive per issue instead of pages** (e.g. a `Peter Parker 001-006` folder containing six separate `.cbr` files, no subfolders) is recognized as that shape too: each archive is converted on its own rather than the whole folder getting wrapped raw into one `.cbz`, which would just embed the unextracted archive bytes instead of actual comic pages. This applies even under `-NoRecurse` — wrapping raw `.rar`/`.cbr` bytes into a `.cbz` is never correct, regardless of recursion depth.
 
 **Watch out for genuinely overlapping releases.** Auto-detection assumes each real volume appears exactly once somewhere in the tree — it has no way to know that, say, a `v01-05` omnibus pack and a separately-provided standalone `v01` folder both contain the same volume 1. If a release provides the same content multiple ways (a full pack *and* individual/partial packs of the same volumes, or a `v06` next to a corrected `v06 fix`), running this as-is converts *all* of them, duplicates included. Sort out which folder to keep per volume first in cases like that, rather than pointing this at the whole tree blind.
 
 ### -NoRecurse: one level only, no auto-detection
 
-Scans just the immediate children of `-Path` and converts each as one archive, without looking inside them for real volume boundaries — so a folder that packs several volumes together (e.g. a `v01-05` folder holding five volume subfolders) becomes **one** `.cbz` containing all of them, not one `.cbz` per volume. Each result is written next to wherever that folder naturally sits, not collected into an `_output` folder:
+Scans just the immediate children of `-Path` and converts each as one archive, without looking inside them for real volume boundaries — so a folder that packs several volumes together (e.g. a `v01-05` folder holding five volume subfolders) becomes **one** `.cbz` containing all of them, not one `.cbz` per volume. Each result is written next to wherever that folder naturally sits, not collected into an `_output` folder. The one exception is a folder holding nothing but individual `.rar`/`.cbr`/`.zip` files (no subfolders) — those are still converted one by one even here, for the same reason as above:
 
 ```powershell
 cca -Path .\Scan -NoRecurse

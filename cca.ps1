@@ -5,20 +5,26 @@
     .cbr, which is the reason this never produces one.
 
 .DESCRIPTION
-    Default: walks the whole tree under -Path looking for "final" volume folders, at
+    Default: walks the whole tree under -Path looking for "final" volumes, at
     whatever depth each one happens to sit, and writes one .cbz per volume into a
     single "<Path's own name>_output" folder created next to -Path. A folder counts as
-    a final volume as soon as it contains at least one file directly inside it, or has
-    no subfolders left to descend into - so a folder with only loose pages (no
+    a final volume as soon as it contains at least one page file directly inside it,
+    or has no subfolders left to descend into - so a folder with only loose pages (no
     subfolders) is final immediately, a folder mixing loose pages with subfolders
     (e.g. a Doraemon "Vol 01" holding both its own cover pages and "Story 001",
     "Story 002", ... subfolders) is final as a whole (everything nested included in one
-    archive), and a folder holding *only* more folders and no files of its own (e.g. a
+    archive), and a folder holding *only* more folders and no pages of its own (e.g. a
     "v01-05" pack with zero loose pages, just five volume subfolders) is not final -
     the script descends into it and repeats the check on each subfolder instead. This
     is what lets one run correctly turn a "v01-05" pack into 5 separate volume .cbz
     files while also converting a standalone "v13" into its own single .cbz, in the
     same pass.
+
+    A folder holding one .rar/.cbr/.zip per issue instead of pages (e.g. a
+    "Peter Parker 001-006" folder with six separate .cbr files, no subfolders) is
+    recognized as that shape too - each archive is converted on its own rather than
+    the whole folder being wrapped raw into one .cbz, which would just embed the
+    unextracted archive bytes instead of actual comic pages.
 
     If -Path itself contains no subfolders (i.e. it's a volume folder itself, holding
     pages directly - like "v13" sitting next to a "v01-05" pack folder), it is converted
@@ -35,6 +41,9 @@
                    (e.g. a "v01-05" folder holding five volume subfolders) becomes one
                    .cbz containing all of them, not one .cbz per volume. Written next
                    to wherever that folder naturally sits, not into an "_output" folder.
+                   Exception: a folder holding nothing but .rar/.cbr/.zip files (one
+                   per issue, no subfolders) is still converted archive-by-archive
+                   even here, never wrapped raw into one .cbz - see above.
       - .rar/.cbr file -> sibling .cbz. Extracted with 7-Zip or WinRAR (whichever is
                      found - see Requirements) into a temp folder, then re-zipped from
                      there with the same layout .cbz would otherwise have gotten,
@@ -112,6 +121,12 @@ $ErrorActionPreference = 'Stop'
 
 $MangaValue = if ($LeftToRight) { 'No' } else { 'YesAndRightToLeft' }
 
+# Extensions that need converting on their own rather than ever being bundled raw
+# into a wrapper .cbz - doing that would just embed the unextracted archive bytes,
+# not actual comic pages. Deliberately excludes .cbz: an existing .cbz needs no
+# conversion, and might be this tool's own leftover output from an earlier run.
+$ArchiveExtensions = @('.rar', '.cbr', '.zip')
+
 function Get-ComicInfoXml {
     param([string]$Manga)
 
@@ -144,30 +159,68 @@ function Write-ComicInfoEntry {
     }
 }
 
-function Resolve-VolumeFolders {
-    # Descends through folders that contain nothing but more folders (no pages of
-    # their own), returning the actual volume folder(s) found at whatever depth
-    # each branch bottoms out at. A folder with any non-archive file directly inside
-    # it, or with no subfolders at all, is treated as final and not descended into.
+function Get-ArchiveOnlyChildren {
+    # Returns the archive files directly inside $Dir if it contains only archives
+    # and no subfolders (e.g. a folder of one .cbr per issue) - meaning every item
+    # in it should be converted on its own rather than the whole folder being
+    # wrapped as one .cbz. Returns $null if $Dir doesn't have that shape.
     param([string]$Dir)
 
     $children = Get-ChildItem -LiteralPath $Dir
-    # .cbz/.cbr are ignored here on purpose: a pack folder re-scanned after a partial
-    # earlier run (or after someone points -Path directly at it with -NoRecurse, which
-    # writes each volume's .cbz right back inside the pack folder itself) would
-    # otherwise look like it "has its own files" and stop being descended into, even
-    # though those files are our own prior output, not source pages.
-    $hasFiles = $children | Where-Object { -not $_.PSIsContainer -and $_.Extension -notin @('.cbz', '.cbr') }
     $subDirs = $children | Where-Object { $_.PSIsContainer }
+    $archives = $children | Where-Object { -not $_.PSIsContainer -and $_.Extension -in $ArchiveExtensions }
+    if ($archives -and -not $subDirs) { return $archives }
+    return $null
+}
 
-    if ($hasFiles -or -not $subDirs) {
-        return , (Get-Item -LiteralPath $Dir)
+function Resolve-ConversionItems {
+    # Walks $Dir looking for real, convertible volumes at whatever depth they sit,
+    # returning one work item per volume: a folder (to be zipped whole) or an
+    # individual archive file (to be extracted/converted on its own - a folder
+    # holding one .cbr per issue must never be wrapped raw into a single .cbz,
+    # since that would just embed the unextracted archive bytes rather than actual
+    # pages). A folder holding only more folders and no pages/archives of its own
+    # is not final - descended into instead.
+    param([string]$Dir)
+
+    $children = Get-ChildItem -LiteralPath $Dir
+    $subDirs = $children | Where-Object { $_.PSIsContainer }
+    $archiveFiles = $children | Where-Object { -not $_.PSIsContainer -and $_.Extension -in $ArchiveExtensions }
+    # .cbz is excluded here on purpose: a pack folder re-scanned after a partial
+    # earlier run (or after someone points -Path directly at it with -NoRecurse,
+    # which writes each volume's .cbz right back inside the pack folder itself)
+    # would otherwise look like it has real content and stop being descended into,
+    # even though those .cbz files are our own prior output, not source pages.
+    $pageFiles = $children | Where-Object { -not $_.PSIsContainer -and $_.Extension -notin $ArchiveExtensions -and $_.Extension -ne '.cbz' }
+
+    if ($pageFiles) {
+        # Real pages directly in this folder make it one volume as a whole -
+        # everything nested under it (including any further subfolders) is bundled
+        # into this one archive, same as a Doraemon "Vol 01" mixing cover pages
+        # with "Story ##" subfolders.
+        return , [PSCustomObject]@{ Type = 'Folder'; Item = (Get-Item -LiteralPath $Dir) }
     }
 
     $result = @()
-    foreach ($sub in $subDirs) {
-        $result += Resolve-VolumeFolders -Dir $sub.FullName
+    if ($archiveFiles) {
+        $result += $archiveFiles | ForEach-Object { [PSCustomObject]@{ Type = 'Archive'; Item = $_ } }
     }
+
+    if ($subDirs) {
+        # Recurse regardless of whether archives were also found directly in this
+        # folder, so a folder mixing loose archives with subfolders doesn't silently
+        # drop whichever wasn't found first.
+        foreach ($sub in $subDirs) {
+            $result += Resolve-ConversionItems -Dir $sub.FullName
+        }
+    }
+    elseif (-not $archiveFiles) {
+        # Dead-end leaf with nothing recognizable inside (or only a stray .cbz) -
+        # still report it as a folder so the normal "no files found" failure
+        # explains why, rather than silently producing nothing for it.
+        $result += [PSCustomObject]@{ Type = 'Folder'; Item = (Get-Item -LiteralPath $Dir) }
+    }
+
     return $result
 }
 
@@ -292,6 +345,95 @@ function Convert-FolderToCbz {
     }
 }
 
+# Looked up lazily, the first time a .rar/.cbr is actually encountered, since most
+# runs won't have one and this touches PATH/Program Files each time it's needed.
+# Cached at script scope so every Convert-RarCbrToCbz call (top-level items and
+# anything found while descending the tree) shares one lookup.
+$script:RarExtractor = $null
+$script:RarExtractorChecked = $false
+
+function Convert-RarCbrToCbz {
+    # Always produces .cbz, never .cbr - Kobo/KOReader doesn't support panel zoom on
+    # .cbr, which is the whole reason this path exists. RAR has no built-in .NET
+    # support, so this needs 7-Zip or WinRAR to extract it first.
+    param(
+        [System.IO.FileSystemInfo]$Item,
+        [string]$DestDir
+    )
+
+    $dest = Join-Path $DestDir ([System.IO.Path]::GetFileNameWithoutExtension($Item.Name) + '.cbz')
+    if ((Test-Path -LiteralPath $dest) -and -not $Force) {
+        Write-Host "SKIP  (exists) $dest"
+        return
+    }
+    if (-not $script:RarExtractorChecked) {
+        $script:RarExtractor = Find-RarExtractor
+        $script:RarExtractorChecked = $true
+    }
+    if (-not $PSCmdlet.ShouldProcess($dest, "Extract RAR/CBR to CBZ '$($Item.Name)'")) {
+        return
+    }
+    if (-not $script:RarExtractor) {
+        Write-Host "FAIL  $($Item.Name): no RAR extractor found (checked PATH and default install locations for 7-Zip and WinRAR) - install one to convert .rar/.cbr sources." -ForegroundColor Red
+        return
+    }
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('cca_' + [System.Guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+        Expand-RarArchive -RarPath $Item.FullName -DestDir $tempDir -ExtractorPath $script:RarExtractor
+        New-ComicZip -SourceDir $tempDir -DestZip $dest -Manga $MangaValue `
+            -RootName ([System.IO.Path]::GetFileNameWithoutExtension($Item.Name))
+        Write-Host "CBZ   $($Item.Name) -> $(Split-Path -Leaf $dest)  (extracted from RAR)"
+    }
+    catch {
+        Write-Host "FAIL  $($Item.Name): $($_.Exception.Message)" -ForegroundColor Red
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
+    }
+}
+
+function Convert-ZipToCbz {
+    param(
+        [System.IO.FileSystemInfo]$Item,
+        [string]$DestDir
+    )
+
+    $dest = Join-Path $DestDir ([System.IO.Path]::GetFileNameWithoutExtension($Item.Name) + '.cbz')
+    if ((Test-Path -LiteralPath $dest) -and -not $Force) {
+        Write-Host "SKIP  (exists) $dest"
+        return
+    }
+    if (-not $PSCmdlet.ShouldProcess($dest, "Copy ZIP to CBZ '$($Item.Name)'")) {
+        return
+    }
+    try {
+        Copy-Item -LiteralPath $Item.FullName -Destination $dest -Force
+        Set-CbzReadingDirection -ZipPath $dest -Manga $MangaValue
+        Write-Host "CBZ   $($Item.Name) -> $(Split-Path -Leaf $dest)"
+    }
+    catch {
+        Write-Host "FAIL  $($Item.Name): $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+function Convert-ArchiveItem {
+    # Dispatches to the right converter for $Item's extension. Shared by the
+    # top-level per-item loop, -NoRecurse's archive-only container children, and
+    # the default's resolved archive work items, so all three report identically.
+    param(
+        [System.IO.FileSystemInfo]$Item,
+        [string]$DestDir
+    )
+
+    if ($Item.Extension -ieq '.rar' -or $Item.Extension -ieq '.cbr') {
+        Convert-RarCbrToCbz -Item $Item -DestDir $DestDir
+    }
+    else {
+        Convert-ZipToCbz -Item $Item -DestDir $DestDir
+    }
+}
+
 # A -Path ending in a trailing backslash (e.g. '.\Some Folder\') gets mangled once it
 # crosses a native process boundary - which calling through the cca.cmd shim always
 # does - because Windows argv parsing treats a backslash immediately before the
@@ -350,73 +492,37 @@ if (-not $items) {
     return
 }
 
-# Only looked up if a .rar/.cbr is actually encountered below, since most runs won't
-# have one and this touches PATH/Program Files each time it's needed.
-$RarExtractor = $null
-$RarExtractorChecked = $false
-
 foreach ($item in $items) {
 
     if ($item.PSIsContainer) {
         if ($NoRecurse) {
-            Convert-FolderToCbz -SourceDir $item.FullName -DestDir $Path -Name $item.Name
+            $archiveChildren = Get-ArchiveOnlyChildren -Dir $item.FullName
+            if ($archiveChildren) {
+                # This folder is really just a set of individual archives (e.g. one
+                # .cbr per issue), not a volume/pack folder to bundle whole - convert
+                # each on its own even under -NoRecurse, since wrapping raw archive
+                # bytes into a .cbz would never produce a working comic archive.
+                foreach ($archiveItem in $archiveChildren) {
+                    Convert-ArchiveItem -Item $archiveItem -DestDir $Path
+                }
+            }
+            else {
+                Convert-FolderToCbz -SourceDir $item.FullName -DestDir $Path -Name $item.Name
+            }
         }
         else {
-            foreach ($volDir in (Resolve-VolumeFolders -Dir $item.FullName)) {
-                Convert-FolderToCbz -SourceDir $volDir.FullName -DestDir $OutDir -Name $volDir.Name
+            foreach ($work in (Resolve-ConversionItems -Dir $item.FullName)) {
+                if ($work.Type -eq 'Folder') {
+                    Convert-FolderToCbz -SourceDir $work.Item.FullName -DestDir $OutDir -Name $work.Item.Name
+                }
+                else {
+                    Convert-ArchiveItem -Item $work.Item -DestDir $OutDir
+                }
             }
         }
     }
-    elseif ($item.Extension -ieq '.rar' -or $item.Extension -ieq '.cbr') {
-        # Always converted to .cbz, never .cbr - Kobo/KOReader doesn't support panel
-        # zoom on .cbr, which is the whole reason this path exists. RAR has no
-        # built-in .NET support, so this needs 7-Zip or WinRAR to extract it first.
-        $dest = Join-Path $OutDir ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbz')
-        if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-            Write-Host "SKIP  (exists) $dest"
-            continue
-        }
-        if (-not $RarExtractorChecked) {
-            $RarExtractor = Find-RarExtractor
-            $RarExtractorChecked = $true
-        }
-        if ($PSCmdlet.ShouldProcess($dest, "Extract RAR/CBR to CBZ '$($item.Name)'")) {
-            if (-not $RarExtractor) {
-                Write-Host "FAIL  $($item.Name): no RAR extractor found (checked PATH and default install locations for 7-Zip and WinRAR) - install one to convert .rar/.cbr sources." -ForegroundColor Red
-                continue
-            }
-            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('cca_' + [System.Guid]::NewGuid().ToString('N'))
-            try {
-                [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
-                Expand-RarArchive -RarPath $item.FullName -DestDir $tempDir -ExtractorPath $RarExtractor
-                New-ComicZip -SourceDir $tempDir -DestZip $dest -Manga $MangaValue `
-                    -RootName ([System.IO.Path]::GetFileNameWithoutExtension($item.Name))
-                Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)  (extracted from RAR)"
-            }
-            catch {
-                Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
-            }
-            finally {
-                if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
-            }
-        }
-    }
-    elseif ($item.Extension -ieq '.zip') {
-        $dest = Join-Path $OutDir ([System.IO.Path]::GetFileNameWithoutExtension($item.Name) + '.cbz')
-        if ((Test-Path -LiteralPath $dest) -and -not $Force) {
-            Write-Host "SKIP  (exists) $dest"
-            continue
-        }
-        if ($PSCmdlet.ShouldProcess($dest, "Copy ZIP to CBZ '$($item.Name)'")) {
-            try {
-                Copy-Item -LiteralPath $item.FullName -Destination $dest -Force
-                Set-CbzReadingDirection -ZipPath $dest -Manga $MangaValue
-                Write-Host "CBZ   $($item.Name) -> $(Split-Path -Leaf $dest)"
-            }
-            catch {
-                Write-Host "FAIL  $($item.Name): $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
+    elseif ($item.Extension -in $ArchiveExtensions) {
+        Convert-ArchiveItem -Item $item -DestDir $OutDir
     }
     else {
         Write-Verbose "Ignoring unrelated file: $($item.Name)"
