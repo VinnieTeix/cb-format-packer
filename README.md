@@ -18,20 +18,41 @@ Open a **new** terminal after installing (already-open ones won't see the `PATH`
 
 ## What it does
 
-Given a directory, it looks at that directory's **immediate children only** (one level deep — it never recurses further to look for more things to convert) and converts each one:
+Given a directory, by default it walks the **whole tree** underneath looking for real volume folders/archives at whatever depth they happen to sit, and converts each one:
 
 | Input | Output | How |
 |---|---|---|
-| Folder | `<name>.cbz` | Whole folder zipped as one archive, with the folder name kept as the root entry inside the zip. Anything nested further down (e.g. per-story subfolders, or a folder that packs several volumes together like `v01-05/`) is included as-is — it does **not** get split into separate archives. |
+| Folder | `<name>.cbz` | Whole folder zipped as one archive, with the folder name kept as the root entry inside the zip. |
 | `.rar`/`.cbr` file | `<name>.cbz` — **never `.cbr`** | Extracted with 7-Zip or WinRAR (whichever is found — see Requirements) into a temp folder, then re-zipped from there exactly like a folder source would be, `ComicInfo.xml` included. See "Why always `.cbz`, even from RAR" below. |
 | `.zip` file | `<name>.cbz` | Copied and renamed — a CBZ *is* a ZIP file — then a `ComicInfo.xml` reading-direction entry is added/replaced at the archive root. |
 | Anything else | ignored | left untouched |
 
-Source folders/files are **never modified or deleted** — outputs are written as new sibling files.
+Source folders/files are **never modified or deleted** — outputs are written as new files, collected into one `<Path's own name>_output` folder next to `-Path`.
 
-### Why only one level deep?
+### Auto-detecting real volume folders at any depth
 
-A "volume" (or a bundle of volumes released together, e.g. a `v01-05/` folder) is one folder, and everything under it belongs inside that single archive. Comic readers sort by full path within the archive, so nested subfolders read in order fine without needing their own separate files. If you want a folder that bundles several volumes to become one `.cbz` per volume instead, point the script at that bundling folder's *parent* so each volume folder is what gets scanned at the top level — the script won't split a bundle for you.
+A folder counts as a real, convertible volume as soon as it has at least one page file directly inside it, or has no subfolders left to descend into. A folder holding *only* more folders and no pages of its own is **not** a real volume — the script descends into it and repeats the check on each subfolder instead. This tells apart a folder that mixes loose pages with subfolders (a real single volume, like a Doraemon `Vol 01` holding both its own cover pages and `Story 001`, `Story 002`, ... subfolders — zipped whole, as one unit) from a folder that's *purely* a container bundling several volumes together (a `v01-05` pack with no pages of its own, just five volume subfolders — not zipped as-is, descended into instead).
+
+This means one run over a mixed tree — a `v01-05` pack sitting next to a standalone `v13` — correctly turns the pack into 5 separate volume `.cbz` files while also converting `v13` into its own single `.cbz`, all in the same pass, regardless of how deep each one happens to be nested:
+
+```powershell
+cca -Path '.\13DL.me_Yotsubato vol 01-15'
+# -> .\13DL.me_Yotsubato vol 01-15_output\<volume>.cbz for all 15 volumes
+```
+
+(`.cbz`/`.cbr` files already sitting inside a folder are ignored when deciding whether that folder "has its own pages" — otherwise re-running this after a partial run, or after converting a pack folder with `-NoRecurse` once, would leave its own prior output looking like real page content and stop it from being descended into correctly next time.)
+
+**Watch out for genuinely overlapping releases.** Auto-detection assumes each real volume appears exactly once somewhere in the tree — it has no way to know that, say, a `v01-05` omnibus pack and a separately-provided standalone `v01` folder both contain the same volume 1. If a release provides the same content multiple ways (a full pack *and* individual/partial packs of the same volumes, or a `v06` next to a corrected `v06 fix`), running this as-is converts *all* of them, duplicates included. Sort out which folder to keep per volume first in cases like that, rather than pointing this at the whole tree blind.
+
+### -NoRecurse: one level only, no auto-detection
+
+Scans just the immediate children of `-Path` and converts each as one archive, without looking inside them for real volume boundaries — so a folder that packs several volumes together (e.g. a `v01-05` folder holding five volume subfolders) becomes **one** `.cbz` containing all of them, not one `.cbz` per volume. Each result is written next to wherever that folder naturally sits, not collected into an `_output` folder:
+
+```powershell
+cca -Path .\Scan -NoRecurse
+```
+
+Useful when a release's folders don't map one-to-one with real volumes in a way auto-detection can't safely resolve on its own (see "overlapping releases" above) — convert the group as a single bundle instead of guessing.
 
 ### Why always .cbz, even from RAR
 
@@ -41,20 +62,7 @@ Since RAR has no built-in .NET support (unlike ZIP), this requires **7-Zip or Wi
 
 ### Pointing -Path directly at a single volume folder
 
-If `-Path` itself has no subfolders *and* isn't just a folder of `.rar`/`.cbr`/`.zip`/`.cbz` files either (it holds pages directly rather than being a container of volume/pack folders or archive files — e.g. you run the script from inside a folder of volume folders and point it straight at one specific volume, `.\v13\`), that folder is converted on its own into one `.cbz` written next to its parent. Pointing `-Path` straight at a folder containing nothing but a handful of `.rar`/`.cbr` files (no subfolders) still converts each of them individually rather than wrapping them all into one `.cbz` together. This only kicks in when `-Path` has zero subfolders and zero archive files directly inside it, so it never changes how a container folder is handled — pointing `-Path` at a folder that holds several volume/pack folders still converts each of *those* into its own `.cbz`, same as always.
-
-### -Recurse: auto-detecting real volume folders at any depth
-
-The default one-level scan can't tell a folder that mixes loose pages with subfolders (a real single volume, like a Doraemon `Vol 01` holding both its own cover pages and `Story 001`, `Story 002`, ... subfolders) apart from a folder that's *purely* a container bundling several volumes together (a `v01-05` pack with no pages of its own, just five volume subfolders) — both just get zipped whole as one unit. `-Recurse` tells them apart and acts on it: a folder counts as a real volume as soon as it has at least one page file directly inside it, or has no subfolders left to descend into; a folder holding *only* more folders and no pages of its own is not a real volume, so the script descends into it and repeats the check on each subfolder instead.
-
-This means one `-Recurse` run over a mixed tree — a `v01-05` pack sitting next to a standalone `v13` — correctly turns the pack into 5 separate volume `.cbz` files while also converting `v13` into its own single `.cbz`, all in the same pass, regardless of how deep each one happens to be nested. Every result is written flat into a single `<Path's own name>_output` folder created next to `-Path`, rather than scattered across whatever depth each volume folder was found at:
-
-```powershell
-cca -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
-# -> .\13DL.me_Yotsubato vol 01-15_output\<volume>.cbz for all 15 volumes
-```
-
-(`.cbz`/`.cbr` files already sitting inside a folder are ignored when deciding whether that folder "has its own pages" — otherwise re-running `-Recurse` after a partial run, or after pointing `-Path` directly at a pack folder without `-Recurse` once, would leave its own prior output looking like real page content and stop it from being descended into correctly next time.)
+If `-Path` itself has no subfolders *and* isn't just a folder of `.rar`/`.cbr`/`.zip`/`.cbz` files either (it holds pages directly rather than being a container of volume/pack folders or archive files — e.g. you run the script from inside a folder of volume folders and point it straight at one specific volume, `.\v13\`), that folder is converted on its own into one `.cbz` — into an `_output` folder next to it by default, or next to its parent with `-NoRecurse`, same as everywhere else. Pointing `-Path` straight at a folder containing nothing but a handful of `.rar`/`.cbr` files (no subfolders) still converts each of them individually rather than wrapping them all into one `.cbz` together. This only kicks in when `-Path` has zero subfolders and zero archive files directly inside it, so it never changes how a container folder is handled — pointing `-Path` at a folder that holds several volume/pack folders still gets scanned normally, same as always.
 
 ### Reading direction (ComicInfo.xml)
 
@@ -75,11 +83,11 @@ Readers that support it (KOReader, Kavita, Komga, ComicRack, ...) pick up the di
 cca -Path .\Scan
 ```
 
-Converts every folder/.rar/.cbr/.zip directly inside `.\Scan` into a matching `.cbz` next to it (never `.cbr`), tagged right-to-left by default.
+Converts every real volume folder/.rar/.cbr/.zip found anywhere under `.\Scan` into a matching `.cbz` (never `.cbr`) in `.\Scan_output`, tagged right-to-left by default.
 
 ### Options
 
-- `-Recurse` — auto-detect real volume folders at any depth instead of only looking one level deep; see above
+- `-NoRecurse` — only look one level deep, converting each top-level folder as a single bundle rather than auto-detecting volume boundaries inside it; see above
 - `-LeftToRight` — tag the batch as left-to-right instead of the default right-to-left
 - `-Force` — overwrite an output file that already exists (default: skip it)
 - `-WhatIf` — preview what would be created/overwritten without writing anything

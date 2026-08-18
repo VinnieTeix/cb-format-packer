@@ -5,20 +5,36 @@
     .cbr, which is the reason this never produces one.
 
 .DESCRIPTION
-    Default (no -Recurse): one level only.
+    Default: walks the whole tree under -Path looking for "final" volume folders, at
+    whatever depth each one happens to sit, and writes one .cbz per volume into a
+    single "<Path's own name>_output" folder created next to -Path. A folder counts as
+    a final volume as soon as it contains at least one file directly inside it, or has
+    no subfolders left to descend into - so a folder with only loose pages (no
+    subfolders) is final immediately, a folder mixing loose pages with subfolders
+    (e.g. a Doraemon "Vol 01" holding both its own cover pages and "Story 001",
+    "Story 002", ... subfolders) is final as a whole (everything nested included in one
+    archive), and a folder holding *only* more folders and no files of its own (e.g. a
+    "v01-05" pack with zero loose pages, just five volume subfolders) is not final -
+    the script descends into it and repeats the check on each subfolder instead. This
+    is what lets one run correctly turn a "v01-05" pack into 5 separate volume .cbz
+    files while also converting a standalone "v13" into its own single .cbz, in the
+    same pass.
 
     If -Path itself contains no subfolders (i.e. it's a volume folder itself, holding
     pages directly - like "v13" sitting next to a "v01-05" pack folder), it is converted
-    on its own into a single sibling .cbz, written next to -Path's parent.
+    on its own into a single .cbz - into the "_output" folder by default, or next to
+    -Path's parent with -NoRecurse, same as everything else below.
 
-    Otherwise, scans the immediate children of -Path (one level only) and converts each:
+    With -NoRecurse: one level only. Scans just the immediate children of -Path and
+    converts each:
       - Folder  -> sibling .cbz, containing the whole folder subtree (including any
                    nested subfolders, at any depth) zipped with the folder name kept
                    as the root entry. Nested folders are NOT split into their own
                    separate archives - only this first level of subfolders is treated
                    as one unit each, so a folder that packs several volumes together
                    (e.g. a "v01-05" folder holding five volume subfolders) becomes one
-                   .cbz containing all of them, not one .cbz per volume.
+                   .cbz containing all of them, not one .cbz per volume. Written next
+                   to wherever that folder naturally sits, not into an "_output" folder.
       - .rar/.cbr file -> sibling .cbz. Extracted with 7-Zip or WinRAR (whichever is
                      found - see Requirements) into a temp folder, then re-zipped from
                      there with the same layout .cbz would otherwise have gotten,
@@ -26,21 +42,6 @@
                      produces a .cbr - see Requirements if neither tool is found.
       - .zip file -> sibling .cbz (container copied, then a ComicInfo.xml reading-direction
                      entry is added/replaced at the archive root)
-
-    With -Recurse: walks the whole tree under -Path looking for "final" volume folders,
-    at whatever depth each one happens to sit, and writes one .cbz per volume into a
-    single "<Path's own name>_output" folder created next to -Path. A folder counts as
-    a final volume as soon as it contains at least one file directly inside it, or has
-    no subfolders left to descend into - so a folder with only loose pages (no
-    subfolders) is final immediately, a folder mixing loose pages with subfolders
-    (e.g. a Doraemon "Vol 01" holding both its own cover pages and "Story 001",
-    "Story 002", ... subfolders) is final as a whole (everything nested included in one
-    archive, matching how it's zipped without -Recurse), and a folder holding *only*
-    more folders and no files of its own (e.g. a "v01-05" pack with zero loose pages,
-    just five volume subfolders) is not final - the script descends into it and repeats
-    the check on each subfolder instead. This is what lets one -Recurse run correctly
-    turn a "v01-05" pack into 5 separate volume .cbz files while also converting a
-    standalone "v13" into its own single .cbz, in the same pass.
 
     Every generated .cbz gets a ComicInfo.xml file written at the root of the archive
     (a sibling of the top-level folder entry, not nested inside it) so readers like
@@ -52,12 +53,12 @@
     folders/files are never modified or deleted.
 
 .PARAMETER Path
-    Directory whose immediate children should be converted (e.g. ".\Digital" or ".\Scan").
+    Directory to scan for volume folders/archives (e.g. ".\Digital" or ".\Scan").
 
-.PARAMETER Recurse
-    Walk the whole tree under -Path for final volume folders (see above) instead of
-    only looking one level deep, writing every resulting .cbz into a single
-    "<Path's own name>_output" folder created next to -Path.
+.PARAMETER NoRecurse
+    Only look one level deep under -Path instead of auto-detecting final volume
+    folders at any depth (see above), writing each result next to wherever it
+    naturally sits instead of into an "<Path's own name>_output" folder.
 
 .PARAMETER LeftToRight
     Tag the generated ComicInfo.xml as left-to-right reading order instead of the
@@ -70,7 +71,7 @@
     Show what would be done without writing anything.
 
 .EXAMPLE
-    cca -Path .\Scan
+    cca -Path '.\13DL.me_Yotsubato vol 01-15'
 
 .EXAMPLE
     cca -Path .\Digital -Force
@@ -79,7 +80,7 @@
     cca -Path .\SomeWesternComic -LeftToRight
 
 .EXAMPLE
-    cca -Path '.\13DL.me_Yotsubato vol 01-15' -Recurse
+    cca -Path .\Scan -NoRecurse
 
 .NOTES
     Run once after cloning: .\install.ps1 - adds a "cca" command to your user PATH
@@ -97,7 +98,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
 
-    [switch]$Recurse,
+    [switch]$NoRecurse,
 
     [switch]$LeftToRight,
 
@@ -152,10 +153,10 @@ function Resolve-VolumeFolders {
 
     $children = Get-ChildItem -LiteralPath $Dir
     # .cbz/.cbr are ignored here on purpose: a pack folder re-scanned after a partial
-    # earlier run (or after someone points -Path directly at it, which - without
-    # -Recurse - writes each volume's .cbz right back inside the pack folder itself)
-    # would otherwise look like it "has its own files" and stop being descended into,
-    # even though those files are our own prior output, not source pages.
+    # earlier run (or after someone points -Path directly at it with -NoRecurse, which
+    # writes each volume's .cbz right back inside the pack folder itself) would
+    # otherwise look like it "has its own files" and stop being descended into, even
+    # though those files are our own prior output, not source pages.
     $hasFiles = $children | Where-Object { -not $_.PSIsContainer -and $_.Extension -notin @('.cbz', '.cbr') }
     $subDirs = $children | Where-Object { $_.PSIsContainer }
 
@@ -265,8 +266,8 @@ function Set-CbzReadingDirection {
 
 function Convert-FolderToCbz {
     # Shared skip/force/-WhatIf/try-catch wrapper around New-ComicZip, used by every
-    # folder-conversion call site (direct-leaf -Path, one-level container children,
-    # and -Recurse's resolved volume folders) so they report identically.
+    # folder-conversion call site (direct-leaf -Path, -NoRecurse's one-level container
+    # children, and the default's resolved volume folders) so they report identically.
     param(
         [string]$SourceDir,
         [string]$DestDir,
@@ -314,13 +315,13 @@ if (-not (Test-Path -LiteralPath $Path)) {
 }
 $Path = (Resolve-Path -LiteralPath $Path).Path
 
-# Without -Recurse, each converted folder is written next to wherever it naturally
-# sits (see the two call sites below). With -Recurse, every result - no matter how
-# deep the volume folder it came from - is collected flat into one output folder
-# next to -Path, so a mixed tree of packs and standalone volumes doesn't scatter
-# output across every nesting level it was found at.
+# By default, every result - no matter how deep the volume folder it came from - is
+# collected flat into one output folder next to -Path, so a mixed tree of packs and
+# standalone volumes doesn't scatter output across every nesting level it was found
+# at. With -NoRecurse, each converted folder is instead written next to wherever it
+# naturally sits (see the two call sites below), matching the old default behavior.
 $OutDir = $Path
-if ($Recurse) {
+if (-not $NoRecurse) {
     $OutDir = Join-Path (Split-Path -Parent $Path) "$(Split-Path -Leaf $Path)_output"
     if ((-not (Test-Path -LiteralPath $OutDir)) -and $PSCmdlet.ShouldProcess($OutDir, 'Create output folder')) {
         # New-Item has no -LiteralPath in Windows PowerShell 5.1; use the .NET API
@@ -338,7 +339,7 @@ if ($topChildren -and -not $topHasSubDirs -and -not $topHasArchives) {
     # -Path itself has no subfolders and isn't just a folder of archive files either,
     # i.e. it holds pages directly rather than being a container of volume/pack
     # folders or a folder of .rar/.zip files - convert -Path itself as a single volume.
-    $leafDestDir = if ($Recurse) { $OutDir } else { Split-Path -Parent $Path }
+    $leafDestDir = if ($NoRecurse) { Split-Path -Parent $Path } else { $OutDir }
     Convert-FolderToCbz -SourceDir $Path -DestDir $leafDestDir -Name (Split-Path -Leaf $Path)
     return
 }
@@ -357,13 +358,13 @@ $RarExtractorChecked = $false
 foreach ($item in $items) {
 
     if ($item.PSIsContainer) {
-        if ($Recurse) {
+        if ($NoRecurse) {
+            Convert-FolderToCbz -SourceDir $item.FullName -DestDir $Path -Name $item.Name
+        }
+        else {
             foreach ($volDir in (Resolve-VolumeFolders -Dir $item.FullName)) {
                 Convert-FolderToCbz -SourceDir $volDir.FullName -DestDir $OutDir -Name $volDir.Name
             }
-        }
-        else {
-            Convert-FolderToCbz -SourceDir $item.FullName -DestDir $Path -Name $item.Name
         }
     }
     elseif ($item.Extension -ieq '.rar' -or $item.Extension -ieq '.cbr') {
